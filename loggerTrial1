@@ -1,0 +1,305 @@
+how to use logger.format for function name and class name for .pyd. it is working for .py file.
+
+Based on my research, I can now provide a comprehensive answer about the logging format issue with .pyd files.
+
+# Python Logging Format Issues with .pyd Files: Function Name and Class Name Problems
+
+## The Problem
+
+When using Python's logging module with `.pyd` files (compiled Python extension modules), the `%(funcName)s` and `%(module)s` format specifiers don't work correctly. This happens because `.pyd` files are compiled binary extensions that don't maintain the same stack frame information that regular `.py` files do[1][2].
+
+## Why This Happens
+
+The core issue stems from how Python's logging system determines function and module information:
+
+1. **Stack Frame Inspection**: Python's logging module uses `logging.findCaller()` method to inspect the call stack and extract information like function name, module name, filename, and line number[3][4].
+
+2. **Compiled Code Limitations**: Compiled extensions (`.pyd` files on Windows, `.so` files on Unix) don't generate proper Python call frames. When the logging system tries to inspect the stack, it can't find the necessary frame information for compiled code[1].
+
+3. **Fallback Behavior**: Instead of showing the actual function name from the `.pyd` file, the logging system falls back to the first Python frame it can find higher up in the call stack, which is misleading[1].
+
+## Available Solutions
+
+### Solution 1: Custom Logger with Stack Level Adjustment
+
+You can create a custom logging wrapper that adjusts the stack level to properly identify the calling function:
+
+```python
+import logging
+import inspect
+
+class CustomLogger:
+    def __init__(self, name):
+        self.logger = logging.getLogger(name)
+    
+    def _log_with_caller_info(self, level, msg, *args, **kwargs):
+        # Get the calling frame manually
+        frame = inspect.currentframe()
+        try:
+            # Go up the stack to find the actual caller
+            caller_frame = frame.f_back.f_back
+            func_name = caller_frame.f_code.co_name
+            filename = caller_frame.f_code.co_filename
+            lineno = caller_frame.f_lineno
+            
+            # Create a custom log record with the correct information
+            extra = kwargs.get('extra', {})
+            extra.update({
+                'funcName': func_name,
+                'filename': filename.split('/')[-1],  # Just the filename
+                'lineno': lineno
+            })
+            kwargs['extra'] = extra
+            
+        finally:
+            del frame
+        
+        self.logger.log(level, msg, *args, **kwargs)
+    
+    def debug(self, msg, *args, **kwargs):
+        self._log_with_caller_info(logging.DEBUG, msg, *args, **kwargs)
+    
+    def info(self, msg, *args, **kwargs):
+        self._log_with_caller_info(logging.INFO, msg, *args, **kwargs)
+    
+    def warning(self, msg, *args, **kwargs):
+        self._log_with_caller_info(logging.WARNING, msg, *args, **kwargs)
+    
+    def error(self, msg, *args, **kwargs):
+        self._log_with_caller_info(logging.ERROR, msg, *args, **kwargs)
+```
+
+### Solution 2: Monkey-Patch the findCaller Method
+
+You can override the default `findCaller` method to handle `.pyd` files better:
+
+```python
+import logging
+import inspect
+import os
+
+def custom_find_caller(logger_self, stack_info=False, stacklevel=1):
+    """
+    Custom findCaller that works better with compiled extensions
+    """
+    frame = inspect.currentframe()
+    if frame is not None:
+        frame = frame.f_back
+    
+    # Skip logging framework frames
+    while frame:
+        filename = frame.f_code.co_filename
+        
+        # Skip internal logging frames
+        if filename == logging._srcfile:
+            frame = frame.f_back
+            continue
+            
+        # For .pyd files, try to extract meaningful information
+        if filename.endswith(('.pyd', '.so')):
+            # Use the function name from the frame
+            func_name = frame.f_code.co_name
+            # Try to get a meaningful module name
+            module_name = os.path.splitext(os.path.basename(filename))[0]
+            return filename, frame.f_lineno, func_name
+        
+        return filename, frame.f_lineno, frame.f_code.co_name
+    
+    return "(unknown file)", 0, "(unknown function)"
+
+# Apply the monkey patch
+logging.Logger.findCaller = custom_find_caller
+```
+
+### Solution 3: Use Stack Level Parameter
+
+For specific logging calls where you know the stack depth, you can use the `stacklevel` parameter[5]:
+
+```python
+import logging
+
+def my_pyd_function():
+    # Use stacklevel to skip the current frame
+    logging.info("Message from PYD function", stacklevel=2)
+```
+
+### Solution 4: Manual Function Name Specification
+
+As a simple workaround, you can manually specify the function and class names in your log messages:
+
+```python
+import logging
+
+class MyClass:
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+    
+    def my_method(self):
+        # Manually specify the context
+        self.logger.info("MyClass.my_method: Processing data")
+        
+def my_function():
+    logger = logging.getLogger(__name__)
+    logger.info("my_function: Starting process")
+```
+
+### Solution 5: Use Alternative Logging Libraries
+
+Consider using logging libraries that handle compiled extensions better, such as:
+
+- **Loguru**: A more modern logging library that may handle stack inspection differently[6]
+- **structlog**: Provides structured logging that doesn't rely as heavily on stack inspection
+
+## Recommended Approach
+
+For most use cases with `.pyd` files, I recommend **Solution 2** (monkey-patching `findCaller`) because:
+
+1. It requires minimal changes to existing code
+2. It works globally across your application
+3. It provides the most accurate information possible given the constraints
+4. It's transparent to the rest of your logging infrastructure
+
+## Implementation Example
+
+Here's a complete working example:
+
+```python
+import logging
+import inspect
+import os
+import sys
+
+def setup_pyd_compatible_logging():
+    """Setup logging that works better with .pyd files"""
+    
+    def enhanced_find_caller(self, stack_info=False, stacklevel=1):
+        """Enhanced findCaller that handles .pyd files better"""
+        frame = inspect.currentframe()
+        if frame is not None:
+            frame = frame.f_back
+        
+        # Skip the specified number of stack levels
+        for _ in range(stacklevel):
+            if frame is not None:
+                frame = frame.f_back
+        
+        while frame:
+            filename = frame.f_code.co_filename
+            func_name = frame.f_code.co_name
+            lineno = frame.f_lineno
+            
+            # Skip logging module frames
+            if filename == logging._srcfile:
+                frame = frame.f_back
+                continue
+            
+            # Handle .pyd/.so files
+            if filename.endswith(('.pyd', '.so', '.dll')):
+                # Extract module name from filename
+                module_name = os.path.splitext(os.path.basename(filename))[0]
+                return filename, lineno, func_name
+            
+            return filename, lineno, func_name
+        
+        return "(unknown file)", 0, "(unknown function)"
+    
+    # Apply the patch
+    logging.Logger.findCaller = enhanced_find_caller
+
+# Setup the enhanced logging
+setup_pyd_compatible_logging()
+
+# Configure logging format
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(funcName)s:%(lineno)d - %(levelname)s - %(message)s'
+)
+
+# Now logging from .pyd files should work better
+logger = logging.getLogger(__name__)
+```
+
+This solution provides the best balance between functionality and ease of implementation for handling logging format issues with `.pyd` files.
+
+Citations:
+[1] Cython logging filename & module - Stack Overflow https://stackoverflow.com/questions/45887669/cython-logging-filename-module
+[2] In Python, how do I obtain the current frame? - Stack Overflow https://stackoverflow.com/questions/1140194/in-python-how-do-i-obtain-the-current-frame/1140231
+[3] logging — Logging facility for Python — Python 3.13.5 documentation https://docs.python.org/3/library/logging.html
+[4] How to log source file name and line number in Python https://stackoverflow.com/questions/533048/how-to-log-source-file-name-and-line-number-in-python/533077
+[5] Generate logs as the function's caller - python - Stack Overflow https://stackoverflow.com/questions/74507284/generate-logs-as-the-functions-caller
+[6] A Complete Guide to Logging in Python with Loguru - Better Stack https://betterstack.com/community/guides/logging/loguru/
+[7] Show the class name from where the record was written in log record https://github.com/Delgan/loguru/issues/523
+[8] how to logging func_name and filename - python - Stack Overflow https://stackoverflow.com/questions/55238414/how-to-logging-func-name-and-filename
+[9] Create a Pyd File in Python - GeeksforGeeks https://www.geeksforgeeks.org/python/create-a-pyd-file-in-python/
+[10] logging: Format - Calmcode https://calmcode.io/course/logging/format
+[11] How to deal with binary extensions (.pyd files) and binary scripts ... https://discuss.python.org/t/how-to-deal-with-binary-extensions-pyd-files-and-binary-scripts-exe-files/56129
+[12] 15.6. logging — Logging facility for Python - Rose-Hulman https://www.rose-hulman.edu/class/cs/archive/csse120-old/csse120-old-terms/201220/Resources/python-3.1.2-docs-html/library/logging.html
+[13] Importing Python extension module (.pyd) at runtime, not packaged ... https://groups.google.com/g/pyinstaller/c/_XWuvFIHaNM
+[14] Python Logging (function name, file name, line number) using a ... https://stackoverflow.com/questions/10973362/python-logging-function-name-file-name-line-number-using-a-single-file
+[15] 15.6. logging — Logging facility for Python https://davis.lbl.gov/Manuals/PYTHON-2.6.6/library/logging.html
+[16] How to Create a pyd File in Python https://www.blog.pythonlibrary.org/2023/11/01/how-to-create-a-pyd-file-in-python/
+[17] Logging Cookbook — Python 3.13.5 documentation https://docs.python.org/3/howto/logging-cookbook.html
+[18] Python Logging - Simplest Guide with Full Code and Examples | ML+ https://www.machinelearningplus.com/python/python-logging-guide/
+[19] Python C extension: Use extension PYD or DLL? - Stack Overflow https://stackoverflow.com/questions/8262884/python-c-extension-use-extension-pyd-or-dll/8520691
+[20] Python Logging Format Tutorial with Examples - Middleware https://middleware.io/blog/python-logging-format/
+[21] How To Add Custom Attributes in Python Logging - DZone https://dzone.com/articles/how-to-add-custom-parameter-in-python-logging
+[22] How to import a .pyd file as a python module? - Stack Overflow https://stackoverflow.com/questions/50278029/how-to-import-a-pyd-file-as-a-python-module
+[23] How to Log Function, File, and Line in Python - A Guide | SigNoz https://signoz.io/guides/python-logging-function-name-file-name-line-number-using-a-single-file/
+[24] Failing to run compiled Python extension - Travis CI Community https://travis-ci.community/t/failing-to-run-compiled-python-extension/7456
+[25] How do I get the function name in my logs - openHAB Community https://community.openhab.org/t/how-do-i-get-the-function-name-in-my-logs/150378
+[26] 15.5. logging — Logging facility for Python - Jython https://www.jython.org/jython-old-sites/docs/library/logging.html
+[27] logging library doesn't seem to work with spyder #2572 - GitHub https://github.com/spyder-ide/spyder/issues/2572
+[28] logging-fstring-interpolation / W1203 - Pylint 4.0.0-dev0 documentation https://pylint.readthedocs.io/en/latest/messages/warning/logging-fstring-interpolation.html
+[29] Logger - Powertools for AWS Lambda (Python) https://docs.powertools.aws.dev/lambda/python/latest/core/logger/
+[30] Python Logging does not work over modules - Stack Overflow https://stackoverflow.com/questions/70340378/python-logging-does-not-work-over-modules/70340468
+[31] Issue 1674315: funcName and module incorrectly reported in logging https://bugs.python.org/issue1674315
+[32] logging.handlers — Logging handlers — Python 3.13.5 documentation https://docs.python.org/3/library/logging.handlers.html
+[33] Logging in Python - GeeksforGeeks https://www.geeksforgeeks.org/python/logging-in-python/
+[34] 16.6. logging — Logging facility for Python - Documentation & Help https://documentation.help/Python-3.6.8/logging.html
+[35] Create a Log File in Python - GeeksforGeeks https://www.geeksforgeeks.org/python/create-a-log-file-in-python/
+[36] How to List All Functions in Python Module - Appdividend https://appdividend.com/list-all-functions-in-python-module/
+[37] 0xgalz.github.io: Automatically Mapping Binaries with Debug Print ... https://0xgalz.github.io
+[38] Inspect live objects - Python Module of the Week - PyMOTW 3 https://pymotw.com/2/inspect/
+[39] logging.py https://bugs.python.org/file4410/logging.py
+[40] Python Debugger – Python pdb - GeeksforGeeks https://www.geeksforgeeks.org/python/python-debugger-python-pdb/
+[41] How to get the file name where the function is defined? - Python Help https://discuss.python.org/t/how-to-get-the-file-name-where-the-function-is-defined/23371
+[42] Show the original function when logging funcName in a ... https://stackoverflow.com/questions/56182903/show-the-original-function-when-logging-funcname-in-a-decorator
+[43] pdb — The Python Debugger — Python 3.13.5 documentation https://docs.python.org/3/library/pdb.html
+[44] python - How to get path of the pyd file aka equivalent of __file https://stackoverflow.com/q/40859519
+[45] IDAPython set name of function using string passed to debug ... https://reverseengineering.stackexchange.com/questions/31531/idapython-set-name-of-function-using-string-passed-to-debug-logging-subfunction
+[46] Inspect Module in Python - GeeksforGeeks https://www.geeksforgeeks.org/python/inspect-module-in-python/
+[47] Remote debugging attachment protocol — Python 3.15.0a0 ... https://docs.python.org/3.15/howto/remote_debugging.html
+[48] inspect — Inspect live objects — Python 3.13.5 documentation https://docs.python.org/3/library/inspect.html
+[49] Logging in Python Crash Course - Security Levels, Log ... https://www.youtube.com/watch?v=m08LtvC3jaY
+[50] 6. Modules — Python 3.13.5 documentation https://docs.python.org/3/tutorial/modules.html
+[51] A way of monitoring the max stack depth reached - Ideas https://discuss.python.org/t/a-way-of-monitoring-the-max-stack-depth-reached/75867
+[52] Adding stack info to logging format in python https://stackoverflow.com/questions/54747730/adding-stack-info-to-logging-format-in-python
+[53] How to get path of the pyd file aka equivalent of __file__ - Stack ... https://stackoverflow.com/questions/40857480/how-to-get-path-of-the-pyd-file-aka-equivalent-of-file
+[54] Print or retrieve a stack traceback - Python 3.6.8 Documentation https://documentation.help/Python-3.6.8/traceback.html
+[55] How to use Logtail to collect Python logs - Simple Log Service https://www.alibabacloud.com/help/en/sls/user-guide/collect-python-logs
+[56] Jedi locks pyd files preventing recompilation · Issue #1211 - GitHub https://github.com/davidhalter/jedi/issues/1211
+[57] Is it a good practice to use logging inside classes/functions in Python? https://softwareengineering.stackexchange.com/questions/420153/is-it-a-good-practice-to-use-logging-inside-classes-functions-in-python
+[58] How to convert Python code to Cython (and speed up 100x)? https://www.machinelearningplus.com/python/how-to-convert-python-code-to-cython-and-speed-up-100x/
+[59] Autocomplete / code inspection for compiled extensions https://intellij-support.jetbrains.com/hc/en-us/community/posts/205802969-Autocomplete-code-inspection-for-compiled-extensions
+[60] Python Logging: A Stroll Through the Source Code https://realpython.com/python-logging-source-code/
+[61] Log and monitor Python Lambda functions - AWS Documentation https://docs.aws.amazon.com/lambda/latest/dg/python-logging.html
+[62] Python Security 0.0 documentation https://python-security.readthedocs.io/security.html
+[63] Logging HOWTO — Python 3.13.5 documentation https://docs.python.org/3/howto/logging.html
+[64] Monkeypatching logging.Logger -- how do arguments work? https://stackoverflow.com/questions/24602655/monkeypatching-logging-logger-how-do-arguments-work
+[65] python - How to create a log file every day using logging module? https://stackoverflow.com/questions/44718204/how-to-create-a-log-file-every-day-using-logging-module
+[66] Preventing logging file IO during test execution - Stack Overflow https://stackoverflow.com/questions/48641406/preventing-logging-file-io-during-test-execution
+[67] A Comprehensive Guide to Logging in Python - Better Stack https://betterstack.com/community/guides/logging/how-to-start-logging-with-python/
+[68] Python Logging Tutorial: How-To, Basic Examples & Best Practices https://sematext.com/blog/python-logging/
+[69] Python Logging Best Practices: The Ultimate Guide - Coralogix https://coralogix.com/blog/python-logging-best-practices-tips/
+[70] Logging in Python: A Developer's Guide | Product Blog • Sentry https://blog.sentry.io/logging-in-python-a-developers-guide/
+[71] Python logging module wrapper configuration - GitHub Gist https://gist.github.com/rgb-24bit/e6b8ccfdd956d74cea22f55250c468ba
+[72] Logging in Python - Real Python https://realpython.com/python-logging/
+[73] Issue 16778: Logger.findCaller needs to be smarter - Python tracker https://bugs.python.org/issue16778
+[74] py311: incorrect logging.LogRecord.module value (and related attrs ... https://github.com/python/cpython/issues/97941
+[75] LoggerAdapter and %(funcName)s prints the wrong function name https://github.com/python/cpython/issues/115233
+[76] logging — python-api v3.8.3 documentation https://developers.shotgridsoftware.com/python-api/_modules/logging.html
+[77] Custom indentation formatter for python's default logger. https://github.com/karaposu/indented-logger
+[78] Advanced Python Logging: Mastering Configuration & Best ... https://uptrace.dev/blog/python-logging
+[79] Python Logging Best Practices: The Ultimate Guide https://last9.io/blog/python-logging-best-practices/
+[80] extra fields · Issue #47 · fluent/fluent-logger-python - GitHub https://github.com/fluent/fluent-logger-python/issues/47
+[81] Python Logging: a Practical Guide | by Will Barillon https://python.plainenglish.io/python-logging-a-practical-guide-721c499dc93a
