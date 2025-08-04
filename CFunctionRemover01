@@ -1,0 +1,115 @@
+import re
+from typing import Tuple
+
+class CFunctionRemover:
+    """
+    A utility class to remove C functions from source code strings.
+    
+    Handles:
+    - Various function return types and modifiers
+    - Nested braces in function bodies
+    - String literals and character constants
+    - Single-line and multi-line comments
+    - Proper whitespace cleanup
+    """
+    
+    def remove_function(self, c_code_string: str, function_name: str) -> Tuple[str, bool, str]:
+        """Remove a C function from the source code string."""
+        if not c_code_string or not function_name:
+            return c_code_string, False, "Invalid input parameters"
+        
+        # Pattern matches function definitions with various modifiers
+        pattern = rf'(?:^|
+)s*(?:statics+|consts+|inlines+|externs+)*w+(?:s**)*s+{re.escape(function_name)}s*([^)]*)s*(?:{{|$)'
+        
+        match = re.search(pattern, c_code_string, re.MULTILINE | re.DOTALL)
+        if not match:
+            return c_code_string, False, f"Function '{function_name}' not found"
+        
+        return self._remove_function_body(c_code_string, match, function_name)
+    
+    def _remove_function_body(self, c_code_string: str, match, function_name: str) -> Tuple[str, bool, str]:
+        """Remove the function body using proper brace matching."""
+        func_start = match.start()
+        if c_code_string[func_start] == '
+':
+            func_start += 1
+        
+        brace_search_start = match.end() - 1 if match.group().endswith('{') else match.end()
+        brace_pos = c_code_string.find('{', brace_search_start)
+        
+        if brace_pos == -1:
+            return c_code_string, False, f"Opening brace not found for function '{function_name}'"
+        
+        func_end = self._find_matching_brace(c_code_string, brace_pos)
+        
+        if func_end == -1:
+            return c_code_string, False, f"Matching closing brace not found for function '{function_name}'"
+        
+        if func_end < len(c_code_string) and c_code_string[func_end] == '
+':
+            func_end += 1
+        
+        result = c_code_string[:func_start] + c_code_string[func_end:]
+        result = re.sub(r'
+s*
+s*
+', '
+
+', result)  # Clean up excess newlines
+        
+        return result, True, f"Successfully removed function '{function_name}'"
+    
+    def _find_matching_brace(self, text: str, start_pos: int) -> int:
+        """Find the matching closing brace, handling comments and string literals."""
+        brace_count = 0
+        pos = start_pos
+        in_string = in_char = escape_next = False
+        in_single_comment = in_multi_comment = False
+        
+        while pos < len(text):
+            char = text[pos]
+            
+            if escape_next:
+                escape_next = False
+                pos += 1
+                continue
+                
+            if char == '\\' and (in_string or in_char):
+                escape_next = True
+                pos += 1
+                continue
+            
+            # Handle comments
+            if not in_string and not in_char:
+                if char == '/' and pos + 1 < len(text):
+                    next_char = text[pos + 1]
+                    if next_char == '/' and not in_multi_comment:
+                        in_single_comment = True
+                    elif next_char == '*' and not in_single_comment:
+                        in_multi_comment = True
+                        pos += 1
+                elif char == '*' and pos + 1 < len(text) and text[pos + 1] == '/' and in_multi_comment:
+                    in_multi_comment = False
+                    pos += 1
+                elif char == '
+' and in_single_comment:
+                    in_single_comment = False
+            
+            # Handle string and character literals
+            if not in_single_comment and not in_multi_comment:
+                if char == '"' and not in_char:
+                    in_string = not in_string
+                elif char == "'" and not in_string:
+                    in_char = not in_char
+                elif not in_string and not in_char:
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            return pos + 1
+            
+            pos += 1
+        
+        return -1
